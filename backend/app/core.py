@@ -4,7 +4,7 @@ import json
 import shutil
 import sqlite3
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,13 @@ STAGES = [
 
 
 def now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def parse_iso(timestamp: str) -> datetime:
+    if timestamp.endswith("Z"):
+        timestamp = timestamp[:-1] + "+00:00"
+    return datetime.fromisoformat(timestamp)
 
 
 def uid() -> str:
@@ -216,7 +222,7 @@ def enrich_item(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     }
     current_streak, longest_streak = streak_for(conn, item["id"])
     confidence = confidence_score(conn, item["id"])
-    last_activity = datetime.fromisoformat(item["last_activity_at"])
+    last_activity = parse_iso(item["last_activity_at"])
     days_inactive = max(0, (datetime.utcnow().date() - last_activity.date()).days)
     consistency = min(100, current_streak * 14 + max(0, 35 - days_inactive) * 1.6)
     commitment = min(100, counts["activities"] * 6 + counts["notes"] * 12 + counts["files"] * 10 + longest_streak * 4)

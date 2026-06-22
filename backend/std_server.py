@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import re
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, unquote as url_unquote
 
 from app import core
 
@@ -22,10 +24,37 @@ def parse_single_file_upload(content_type: str, body: bytes) -> tuple[str, bytes
             continue
         headers = header_blob.decode("utf-8", errors="ignore")
         file_name = "upload.bin"
-        for chunk in headers.split(";"):
-            chunk = chunk.strip()
-            if chunk.startswith("filename="):
-                file_name = chunk.split("=", 1)[1].strip().strip('"') or file_name
+        # Robustly parse Content-Disposition header for filename or filename*
+        for line in headers.splitlines():
+            if "content-disposition" in line.lower():
+                pieces = [p.strip() for p in line.split(";")]
+                for p in pieces:
+                    if p.lower().startswith("filename*"):
+                        # filename*=utf-8''%E2%82%AC%20rates
+                        val = p.split("=", 1)[1]
+                        if "''" in val:
+                            # take the part after the encoding declaration
+                            _, enc_name = val.split("''", 1)
+                            file_name = url_unquote(enc_name)
+                        else:
+                            file_name = val.strip('"')
+                        break
+                    if p.lower().startswith("filename="):
+                        val = p.split("=", 1)[1].strip()
+                        file_name = val.strip('"')
+                        break
+                if file_name != "upload.bin":
+                    break
+        # If no filename found, try to derive extension from Content-Type header
+        if file_name == "upload.bin":
+            m = re.search(r'Content-Type:\s*([^;\r\n]+)', headers, flags=re.IGNORECASE)
+            if m:
+                mime = m.group(1).strip()
+                ext = mimetypes.guess_extension(mime) or ''
+                if ext.startswith('.'):
+                    file_name = f"file{ext}"
+                else:
+                    file_name = f"file{ext}" if ext else "file.bin"
         return file_name, file_blob.rstrip(b"\r\n-")
     raise ValueError("No file field found")
 
@@ -75,9 +104,12 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[:2] == ["api", "files"]:
                 path, name = core.get_file(parts[2])
                 data = path.read_bytes()
+                mime_type, _ = mimetypes.guess_type(name)
                 self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Content-Type", mime_type or "application/octet-stream")
+                download = qs.get("download", [""])[0].lower() in ("1", "true", "yes")
+                disposition = "attachment" if download else "inline"
+                self.send_header("Content-Disposition", f'{disposition}; filename="{name}"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

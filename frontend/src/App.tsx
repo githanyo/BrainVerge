@@ -25,6 +25,14 @@ import type { Activity, ConfidenceEntry, Dashboard, Detail, GrowthItem, Note } f
 const blankItem = { title: "", description: "", category: "Skills" };
 const archiveReasons = ["Goal Achieved", "Lost Interest", "No Time", "Too Difficult", "Replaced By Another Interest", "No Longer Relevant", "Other"];
 
+function parseTimestamp(value: string): Date {
+  const tzPattern = /[+-]\d{2}:\d{2}$/;
+  if (value.endsWith("Z") || tzPattern.test(value)) {
+    return new Date(value);
+  }
+  return new Date(`${value}Z`);
+}
+
 export function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -34,7 +42,7 @@ export function App() {
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(blankItem);
   const [note, setNote] = useState({ title: "", content: "" });
-  const [confidence, setConfidence] = useState({ discussScore: 5, applyScore: 5, teachScore: 5, note: "" });
+  const [confidence, setConfidence] = useState({ discussScore: 0, applyScore: 0, teachScore: 0, note: "" });
   const [archiveReason, setArchiveReason] = useState(archiveReasons[0]);
   const [error, setError] = useState("");
 
@@ -86,7 +94,7 @@ export function App() {
     event.preventDefault();
     if (!detail) return;
     await api.confidence(detail.item.id, confidence);
-    setConfidence({ discussScore: 5, applyScore: 5, teachScore: 5, note: "" });
+    setConfidence({ discussScore: 0, applyScore: 0, teachScore: 0, note: "" });
     await refresh(detail.item.id);
   }
 
@@ -110,12 +118,15 @@ export function App() {
 
   async function setStatus(status: "Active" | "Archived" | "Abandoned") {
     if (!detail) return;
+    if (status === "Archived" && !window.confirm("Archive this growth item? You can restore it later.")) return;
+    if (status === "Abandoned" && !window.confirm("Mark this growth item as abandoned?")) return;
     await api.updateItem(detail.item.id, { status, archivedReason: status === "Archived" ? archiveReason : null });
     await refresh(detail.item.id);
   }
 
   async function deleteSelected() {
     if (!detail) return;
+    if (!window.confirm("Delete this growth item permanently? This cannot be undone.")) return;
     const next = dashboard?.items.find((item) => item.id !== detail.item.id)?.id ?? "";
     await api.deleteItem(detail.item.id);
     setDetail(null);
@@ -163,11 +174,12 @@ export function App() {
           <SummaryCards dashboard={dashboard} />
           <CreateItem form={form} setForm={setForm} categories={categories} onSubmit={createItem} />
           <ItemList
-            items={visibleItems}
+            items={dashboard.items}
             selectedId={selectedId}
             statusFilter={statusFilter}
             setStatusFilter={setStatusFilter}
             onSelect={selectItem}
+            query={query}
           />
         </aside>
 
@@ -269,26 +281,60 @@ function ItemList({
   statusFilter,
   setStatusFilter,
   onSelect,
+  query,
 }: {
   items: GrowthItem[];
   selectedId: string;
   statusFilter: string;
   setStatusFilter: (value: string) => void;
   onSelect: (id: string) => void;
+  query: string;
 }) {
+  const visible = items.filter((item) => {
+    const statusOk = statusFilter === "all" || item.status === statusFilter;
+    const q = query.trim().toLowerCase();
+    const queryOk = !q || [item.title, item.description, item.category].join(" ").toLowerCase().includes(q);
+    return statusOk && queryOk;
+  });
+
+  const archivedCount = items.filter((i) => i.status === "Archived").length;
+  const abandonedCount = items.filter((i) => i.status === "Abandoned").length;
+
   return (
     <Panel>
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="font-semibold text-ink">Growth Items</h2>
-        <select className="rounded-md border border-white/10 bg-mist px-2 py-1 text-xs text-ink" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All</option>
-          <option value="Active">Active</option>
-          <option value="Archived">Archived</option>
-          <option value="Abandoned">Abandoned</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <button
+            className={`text-xs rounded-md px-2 py-1 ${statusFilter === "Archived" ? "bg-mist" : "bg-transparent"}`}
+            onClick={() => {
+              setStatusFilter("Archived");
+              const first = items.find((i) => i.status === "Archived");
+              if (first) onSelect(first.id);
+            }}
+          >
+            Archived ({archivedCount})
+          </button>
+          <button
+            className={`text-xs rounded-md px-2 py-1 ${statusFilter === "Abandoned" ? "bg-mist" : "bg-transparent"}`}
+            onClick={() => {
+              setStatusFilter("Abandoned");
+              const first = items.find((i) => i.status === "Abandoned");
+              if (first) onSelect(first.id);
+            }}
+          >
+            Abandoned ({abandonedCount})
+          </button>
+          <select className="rounded-md border border-white/10 bg-mist px-2 py-1 text-xs text-ink" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="all">All</option>
+            <option value="Active">Active</option>
+            <option value="Archived">Archived</option>
+            <option value="Abandoned">Abandoned</option>
+          </select>
+        </div>
       </div>
       <div className="max-h-[560px] space-y-2 overflow-auto pr-1">
-        {items.map((item) => (
+        {visible.map((item) => (
           <button
             key={item.id}
             onClick={() => onSelect(item.id)}
@@ -394,7 +440,7 @@ function RecentTimeline({ activities }: { activities: Activity[] }) {
         {activities.slice(0, 10).map((activity) => (
           <div key={activity.id} className="rounded-md border border-white/10 bg-mist px-3 py-2 text-sm">
             <p className="font-medium">{activity.action_type}</p>
-            <p className="text-xs text-moss">{activity.title} · {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}</p>
+            <p className="text-xs text-moss">{activity.title} · {formatDistanceToNow(parseTimestamp(activity.timestamp), { addSuffix: true })}</p>
           </div>
         ))}
       </div>
@@ -493,10 +539,31 @@ function DetailPanel(props: {
         </label>
         <div className="mt-3 space-y-2">
           {detail.files.map((file) => (
-            <a key={file.id} className="block rounded-md bg-mist px-3 py-2 text-sm hover:text-leaf" href={`/api/files/${file.id}`}>
-              {file.file_name}
-              <span className="block text-xs text-moss">{Math.round(file.file_size / 1024)} KB</span>
-            </a>
+            <div key={file.id} className="rounded-md border border-white/10 bg-[#0B1016] px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-white">{file.file_name}</p>
+                  <p className="text-xs text-moss">{Math.round(file.file_size / 1024)} KB</p>
+                </div>
+                <div className="flex gap-2">
+                  <a
+                    href={`/api/files/${file.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-soft text-xs"
+                  >
+                    View
+                  </a>
+                  <a
+                    href={`/api/files/${file.id}?download=1`}
+                    download={file.file_name}
+                    className="btn-primary text-xs"
+                  >
+                    Download
+                  </a>
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       </Panel>
@@ -509,7 +576,7 @@ function DetailPanel(props: {
           {detail.activities.slice(0, 14).map((activity) => (
             <div key={activity.id} className="border-l-2 border-leaf pl-3">
               <p className="text-sm font-medium">{activity.action_type}</p>
-              <p className="text-xs text-moss">{format(new Date(activity.timestamp), "MMM d, yyyy h:mm a")}</p>
+              <p className="text-xs text-moss">{format(parseTimestamp(activity.timestamp), "MMM d, yyyy h:mm a")}</p>
             </div>
           ))}
         </div>
@@ -559,11 +626,21 @@ function NoteCard({ note, onSave, onDelete }: { note: Note; onSave: (noteId: str
         <p className="font-medium">{note.title}</p>
         <div className="flex gap-1">
           <button className="rounded-md p-1 text-leaf hover:bg-white/10" title="Edit note" onClick={() => setEditing(true)}><BookOpenText className="h-4 w-4" /></button>
-          <button className="rounded-md p-1 text-berry hover:bg-white/10" title="Delete note" onClick={() => onDelete(note.id)}><Trash2 className="h-4 w-4" /></button>
+          <button
+            className="rounded-md p-1 text-berry hover:bg-white/10"
+            title="Delete note"
+            onClick={() => {
+              if (window.confirm("Delete this note permanently? This cannot be undone.")) {
+                onDelete(note.id);
+              }
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
         </div>
       </div>
       <p className="mt-1 whitespace-pre-wrap text-sm text-soil">{note.content}</p>
-      <p className="mt-2 text-xs text-moss">{formatDistanceToNow(new Date(note.updated_at), { addSuffix: true })}</p>
+      <p className="mt-2 text-xs text-moss">{formatDistanceToNow(parseTimestamp(note.updated_at), { addSuffix: true })}</p>
     </article>
   );
 }
@@ -575,7 +652,7 @@ function Range({ label, value, onChange }: { label: string; value: number; onCha
         <span>{label}</span>
         <span>{value}/10</span>
       </div>
-      <input className="w-full accent-canopy" min={1} max={10} type="range" value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <input className="w-full accent-canopy" min={0} max={10} type="range" value={value} onChange={(e) => onChange(Number(e.target.value))} />
     </label>
   );
 }
